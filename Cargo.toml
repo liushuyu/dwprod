@@ -20,6 +20,7 @@ required-features = ["exe"]
 fallible-iterator = "0.3"
 gimli = "0.30"
 object = "0.36"
+memmap2 = "0.9"
 
 [dependencies.clap]
 optional = true

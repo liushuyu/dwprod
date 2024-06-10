@@ -135,8 +135,8 @@ use object::{Endianness, Object, ObjectSection};
 use std::error;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
-use std::path;
+use std::io::{self, Seek, SeekFrom};
+use std::path::{self, Path, PathBuf};
 
 /// Errors that `dwprod` can encounter.
 #[derive(Debug)]
@@ -225,17 +225,21 @@ impl Options {
     where
         F: FnMut(&mut Producers) -> T,
     {
-        let mut contents = vec![];
-        {
-            let mut file = fs::File::open(self.file)?;
-            file.read_to_end(&mut contents)?;
-        }
-
-        let file = object::File::parse(&contents[..])?;
+        let file = fs::File::open(&self.file)?;
+        let mut contents = unsafe { memmap2::Mmap::map(&file)? };
+        let mut file = object::File::parse(&contents[..])?;
         let endianness = match file.endianness() {
             Endianness::Little => RunTimeEndian::Little,
             Endianness::Big => RunTimeEndian::Big,
         };
+
+        #[cfg(unix)]
+        if !file.has_debug_symbols() {
+            let debug_file = Self::find_separate_debug_info(&self.file, &file)
+                .ok_or_else(|| Error::from("missing debug symbols"))?;
+            contents = unsafe { memmap2::Mmap::map(&debug_file)? };
+            file = object::File::parse(&contents[..])?;
+        }
 
         let debug_info = file
             .section_by_name(".debug_info")
@@ -264,6 +268,81 @@ impl Options {
         };
 
         Ok(f(&mut producers))
+    }
+
+    #[cfg(unix)]
+    fn find_separate_debug_info(filename: &Path, file: &object::File) -> Option<fs::File> {
+        use std::os::unix::ffi::OsStrExt;
+
+        let mut file_name_candidates = Vec::new();
+        // if the file does not have a build ID, we won't be able to validate
+        // the separated debug info file
+        let build_id = file.build_id().ok()??;
+        if let Ok(gnu_debuglink) = file.gnu_debuglink() {
+            if let Some(gnu_debuglink) = gnu_debuglink {
+                file_name_candidates.push(gnu_debuglink.0);
+            }
+        }
+        if let Ok(gnu_debugaltlink) = file.gnu_debugaltlink() {
+            if let Some(gnu_debugaltlink) = gnu_debugaltlink {
+                file_name_candidates.push(gnu_debugaltlink.0);
+            }
+        }
+
+        let mut hex_build_id = String::with_capacity(45);
+        let full_path;
+        if build_id.len() > 4 {
+            for byte in build_id.iter() {
+                hex_build_id.push_str(&format!("{:02x}", byte));
+            }
+            hex_build_id.push_str(".debug");
+            let stem = &hex_build_id[2..];
+            file_name_candidates.push(stem.as_bytes());
+            full_path = format!("{}/{}", &hex_build_id[..2], stem);
+            file_name_candidates.push(full_path.as_bytes());
+        }
+
+        let mut candidate_paths = vec![
+            PathBuf::from("/usr/lib/debug/"),
+            PathBuf::from("/usr/lib/debug/.build-id/"),
+            PathBuf::new(),
+        ];
+        let absolute_path = filename.canonicalize().ok();
+        if let Some(absolute_path) = absolute_path {
+            if let Some(parent) = absolute_path.parent() {
+                candidate_paths.push(parent.to_path_buf());
+                if let Ok(path) = parent.strip_prefix("/") {
+                    candidate_paths.push(PathBuf::from("/usr/lib/debug/").join(path));
+                }
+            }
+        }
+
+        for candidate in file_name_candidates {
+            let path = Path::new(std::ffi::OsStr::from_bytes(candidate));
+            for candidate_path in candidate_paths.iter() {
+                let mut file = match fs::File::open(candidate_path.join(path)) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                let fmap =
+                    match unsafe { memmap2::Mmap::map(&file) } {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
+                let obj_file = match object::File::parse(fmap.as_ref()) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                if let Ok(current_build_id) = obj_file.build_id() {
+                    if current_build_id == Some(build_id) {
+                        file.seek(SeekFrom::Start(0)).ok()?;
+                        return Some(file);
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
