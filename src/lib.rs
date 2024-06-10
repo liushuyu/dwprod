@@ -64,13 +64,13 @@ fn each_rustc_producer<F>(
     mut callback: F
 ) -> dwprod::Result<()>
 where
-    F: FnMut(String)
+    F: FnMut(String) -> Result<(), dwprod::Error>
 {
     let opts = dwprod::Options::new(shared_lib_or_exe);
     opts.producers(|producers| {
         producers
             // Filter down to only the producers with "rustc" in their name.
-            .filter(|p| p.contains("rustc"))
+            .filter(|p| Ok(p.contains("rustc")))
             // Then map the given callback over each producer.
             .map(&mut callback)
             // Finally, use `count` to force iteration.
@@ -90,7 +90,7 @@ First, install via `cargo`:
 $ cargo install dwprod
 ```
 
-Then, run `dwprod path/to/shared/library/or/executable` to get a dump of all of
+Then, run `dwprod path/to/shared/library/or/executable` to get a dump of all
 the `DW_AT_producer` values for each compilation unit within the given shared
 library or executable.
 
@@ -127,13 +127,11 @@ For more details about the `dwprod` command line tool, run `dwprod --help`.
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-extern crate fallible_iterator;
-extern crate gimli;
-extern crate object;
-
 use fallible_iterator::FallibleIterator;
-use gimli::{CompilationUnitHeadersIter, DebugAbbrev, DebugInfo, DebugStr, EndianBuf, NativeEndian,
-            Reader};
+use gimli::{
+    DebugAbbrev, DebugInfo, DebugInfoUnitHeadersIter, DebugStr, EndianSlice, RunTimeEndian,
+};
+use object::{Endianness, Object, ObjectSection};
 use std::error;
 use std::fmt;
 use std::fs;
@@ -164,15 +162,7 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::Msg(ref s) => s.as_str(),
-            Error::Io(ref e) => e.description(),
-            Error::Dwarf(ref e) => e.description(),
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
             Error::Msg(_) => None,
             Error::Io(ref e) => Some(e),
@@ -202,6 +192,12 @@ impl From<String> for Error {
 impl<'a> From<&'a str> for Error {
     fn from(s: &'a str) -> Error {
         s.to_string().into()
+    }
+}
+
+impl From<object::Error> for Error {
+    fn from(e: object::Error) -> Error {
+        Error::Io(io::Error::new(io::ErrorKind::Other, e))
     }
 }
 
@@ -236,18 +232,25 @@ impl Options {
         }
 
         let file = object::File::parse(&contents[..])?;
+        let endianness = match file.endianness() {
+            Endianness::Little => RunTimeEndian::Little,
+            Endianness::Big => RunTimeEndian::Big,
+        };
 
-        let debug_info = file.get_section(".debug_info")
+        let debug_info = file
+            .section_by_name(".debug_info")
             .ok_or_else(|| Error::from("missing .debug_info section"))?;
-        let debug_info = DebugInfo::new(debug_info, gimli::NativeEndian);
+        let debug_info = DebugInfo::new(debug_info.data()?, endianness);
 
-        let debug_abbrev = file.get_section(".debug_abbrev")
+        let debug_abbrev = file
+            .section_by_name(".debug_abbrev")
             .ok_or_else(|| Error::from("missing .debug_abbrev section"))?;
-        let debug_abbrev = DebugAbbrev::new(debug_abbrev, gimli::NativeEndian);
+        let debug_abbrev = DebugAbbrev::new(debug_abbrev.data()?, endianness);
 
-        let debug_str = file.get_section(".debug_str")
+        let debug_str = file
+            .section_by_name(".debug_str")
             .ok_or_else(|| Error::from("missing .debug_str section"))?;
-        let debug_str = DebugStr::new(debug_str, gimli::NativeEndian);
+        let debug_str = DebugStr::new(debug_str.data()?, endianness);
 
         let headers = debug_info.units();
 
@@ -265,9 +268,9 @@ impl Options {
 /// each compilation unit in the configured file.
 #[derive(Debug)]
 pub struct Producers<'a> {
-    debug_str: DebugStr<EndianBuf<'a, NativeEndian>>,
-    debug_abbrev: DebugAbbrev<EndianBuf<'a, NativeEndian>>,
-    headers: CompilationUnitHeadersIter<EndianBuf<'a, NativeEndian>>,
+    debug_str: DebugStr<EndianSlice<'a, RunTimeEndian>>,
+    debug_abbrev: DebugAbbrev<EndianSlice<'a, RunTimeEndian>>,
+    headers: DebugInfoUnitHeadersIter<EndianSlice<'a, RunTimeEndian>>,
 }
 
 impl<'a> Producers<'a> {

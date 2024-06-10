@@ -8,6 +8,7 @@ name = "dwprod"
 readme = "./README.md"
 repository = "https://github.com/fitzgen/dwprod"
 version = "0.1.0"
+edition = "2018"
 
 [[bin]]
 doc = false
@@ -16,13 +17,13 @@ path = "src/bin/dwprod.rs"
 required-features = ["exe"]
 
 [dependencies]
-fallible-iterator = "0.1.3"
-gimli = "0.14.0"
-object = "0.4.1"
+fallible-iterator = "0.3"
+gimli = "0.30"
+object = "0.36"
 
 [dependencies.clap]
 optional = true
-version = "2.26.2"
+version = "4"
 
 [features]
 default = ["exe"]

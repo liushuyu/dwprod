@@ -1,6 +1,4 @@
-extern crate clap;
-extern crate dwprod;
-
+use clap::Command;
 use std::process;
 
 fn main() {
@@ -13,7 +11,7 @@ fn main() {
 fn try_main() -> dwprod::Result<()> {
     let matches = parse_args();
 
-    let opts = dwprod::Options::new(matches.value_of("file").unwrap());
+    let opts = dwprod::Options::new(matches.get_one::<String>("file").unwrap());
 
     opts.producers(|producers| {
         while let Some(producer) = producers.next()? {
@@ -24,12 +22,12 @@ fn try_main() -> dwprod::Result<()> {
     })?
 }
 
-fn parse_args() -> clap::ArgMatches<'static> {
-    clap::App::new(env!("CARGO_PKG_NAME"))
+fn parse_args() -> clap::ArgMatches {
+    Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
         .about(env!("CARGO_PKG_DESCRIPTION"))
-        .arg(clap::Arg::with_name("file").required(true).help(
+        .arg(clap::Arg::new("file").required(true).help(
             "The shared library or executable we should search for \
              `DW_AT_producer` information in.",
         ))
