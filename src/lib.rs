@@ -240,17 +240,20 @@ impl Options {
         let debug_info = file
             .section_by_name(".debug_info")
             .ok_or_else(|| Error::from("missing .debug_info section"))?;
-        let debug_info = DebugInfo::new(debug_info.data()?, endianness);
+        let debug_info_decompressed = debug_info.uncompressed_data()?;
+        let debug_info = DebugInfo::new(&debug_info_decompressed, endianness);
 
         let debug_abbrev = file
             .section_by_name(".debug_abbrev")
             .ok_or_else(|| Error::from("missing .debug_abbrev section"))?;
-        let debug_abbrev = DebugAbbrev::new(debug_abbrev.data()?, endianness);
+        let debug_abbrev_decompressed = debug_abbrev.uncompressed_data()?;
+        let debug_abbrev = DebugAbbrev::new(&debug_abbrev_decompressed, endianness);
 
         let debug_str = file
             .section_by_name(".debug_str")
             .ok_or_else(|| Error::from("missing .debug_str section"))?;
-        let debug_str = DebugStr::new(debug_str.data()?, endianness);
+        let debug_str_decompressed = debug_str.uncompressed_data()?;
+        let debug_str = DebugStr::new(&debug_str_decompressed, endianness);
 
         let headers = debug_info.units();
 
